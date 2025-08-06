@@ -1,4 +1,4 @@
-name: Version, Tag, Release & Package
+name: Version, Tag, Release & Package (packagejson)
 
 on:
   pull_request:
@@ -25,14 +25,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install toml
-        run: |
-          python -m pip install toml
-
-      - name: Récupérer la version actuelle depuis pyproject.toml
+      - name: Récupérer la version actuelle depuis package.json
         id: get_version
         run: |
-          VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
+          VERSION=$(jq -r '.version' package.json)
           echo "CURRENT_VERSION=${VERSION}" >> $GITHUB_ENV
           echo "Version actuelle: $VERSION"
 
@@ -50,25 +46,34 @@ jobs:
           CLEAN_VERSION=$(echo $CURRENT_VERSION | sed 's/-pre-prod//')
           echo "Version nettoyée: $CLEAN_VERSION"
           
+          # Découper la version en MAJOR.MINOR.PATCH
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CLEAN_VERSION"
+          echo "Version décomposée: MAJOR=$MAJOR, MINOR=$MINOR, PATCH=$PATCH"
+          
           # Incrémenter la version selon le type de branche source
           case $BRANCH_NAME in
             feat/*|feature/*)
-              NEW_VERSION=$(echo $CLEAN_VERSION | awk -F. -v OFS=. '{$2++; $3=0; print $0}')
+              MINOR=$((MINOR + 1))
+              PATCH=0
               echo "🚀 Incrémentation mineure (feature)"
               ;;
             fix/*|hotfix/*)
-              NEW_VERSION=$(echo $CLEAN_VERSION | awk -F. -v OFS=. '{$3++; print $0}')
+              PATCH=$((PATCH + 1))
               echo "🐛 Incrémentation patch (fix)"
               ;;
             *breaking*|*major*)
-              NEW_VERSION=$(echo $CLEAN_VERSION | awk -F. -v OFS=. '{$1++; $2=0; $3=0; print $0}')
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
               echo "💥 Incrémentation majeure (breaking change)"
               ;;
             *)
-              NEW_VERSION=$CLEAN_VERSION
               echo "ℹ️ Pas d'incrémentation automatique"
               ;;
           esac
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "Nouvelle version calculée: $NEW_VERSION"
           
           # Ajouter le suffixe selon la branche cible
           if [[ "$TARGET_BRANCH" == "develop" ]]; then
@@ -111,21 +116,26 @@ jobs:
             echo 'EOF'
           } >> $GITHUB_ENV
 
-      - name: Mettre à jour la version dans pyproject.toml
+      - name: Mettre à jour la version dans package.json
         id: version
         run: |
-          python -c "import toml; data = toml.load('pyproject.toml'); data['project']['version'] = '${{ env.FULL_VERSION }}'; toml.dump(data, open('pyproject.toml', 'w'))"
-          echo "✅ pyproject.toml mis à jour avec la version: ${{ env.FULL_VERSION }}"
+          echo "📝 Mise à jour de package.json avec la version: ${{ env.FULL_VERSION }}"
+          jq --arg version "${{ env.FULL_VERSION }}" '.version = $version' package.json > tmp.json && mv tmp.json package.json
+          
+          # Vérifier que la mise à jour a fonctionné
+          NEW_VERSION_CHECK=$(jq -r '.version' package.json)
+          echo "✅ package.json mis à jour. Version vérifiée: $NEW_VERSION_CHECK"
+          
           echo "version=${{ env.NEW_VERSION }}" >> $GITHUB_OUTPUT
           echo "full_tag=${{ env.FULL_VERSION }}" >> $GITHUB_OUTPUT
           echo "is_latest=${{ env.IS_LATEST }}" >> $GITHUB_OUTPUT
 
-      - name: Commit and push the updated pyproject.toml
+      - name: Commit and push the updated package.json
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           
-          git add pyproject.toml
+          git add package.json
           git commit -m "🔖 Update version to ${{ env.FULL_VERSION }}"
           git push origin ${{ github.ref_name }}
 
@@ -178,6 +188,15 @@ jobs:
             # Pull par version spécifique
             docker pull ghcr.io/baptiste-ferrand/template-release:${{ env.FULL_VERSION }}
             ${{ env.IS_LATEST == 'true' && format('{0}# Pull latest stable{0}docker pull ghcr.io/baptiste-ferrand/template-release:latest', '
+            ') || '' }}
+            ```
+            
+            ## 📦 NPM Package (si applicable)
+            
+            ```bash
+            # Installation par version spécifique
+            npm install your-package-name@${{ env.FULL_VERSION }}
+            ${{ env.IS_LATEST == 'true' && format('{0}# Installation latest stable{0}npm install your-package-name@latest', '
             ') || '' }}
             ```
             
@@ -244,8 +263,8 @@ jobs:
           platforms: linux/amd64,linux/arm64/v8
           tags: ${{ env.DOCKER_TAGS }}
           labels: |
-            org.opencontainers.image.title=Track&Train API
-            org.opencontainers.image.description=API for Track&Train application
+            org.opencontainers.image.title=Your Node.js Application
+            org.opencontainers.image.description=Node.js application with automated versioning
             org.opencontainers.image.version=${{ needs.versioning-and-release.outputs.full_tag }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
@@ -268,3 +287,6 @@ jobs:
             echo "docker pull ghcr.io/baptiste-ferrand/template-release:latest" >> $GITHUB_STEP_SUMMARY
           fi
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 package.json" >> $GITHUB_STEP_SUMMARY
+          echo "- La version dans package.json a été mise à jour automatiquement" >> $GITHUB_STEP_SUMMARY
