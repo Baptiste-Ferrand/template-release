@@ -1,4 +1,4 @@
-name: Version, Tag, Release & Package
+name: Version, Tag, Release & Package (toml)
 
 on:
   pull_request:
