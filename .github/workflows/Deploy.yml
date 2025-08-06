@@ -176,8 +176,8 @@ jobs:
             
             ```bash
             # Pull par version spécifique
-            docker pull ghcr.io/track-train/api:${{ env.FULL_VERSION }}
-            ${{ env.IS_LATEST == 'true' && format('{0}# Pull latest stable{0}docker pull ghcr.io/track-train/api:latest', '
+            docker pull ghcr.io/baptiste-ferrand/template-release:${{ env.FULL_VERSION }}
+            ${{ env.IS_LATEST == 'true' && format('{0}# Pull latest stable{0}docker pull ghcr.io/baptiste-ferrand/template-release:latest', '
             ') || '' }}
             ```
             
@@ -224,10 +224,10 @@ jobs:
       - name: Préparer les tags Docker
         id: prepare_tags
         run: |
-          TAGS="ghcr.io/track-train/api:${{ needs.versioning-and-release.outputs.full_tag }}"
+          TAGS="ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}"
           
           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
-            TAGS="${TAGS},ghcr.io/track-train/api:latest"
+            TAGS="${TAGS},ghcr.io/baptiste-ferrand/template-release:latest"
             echo "🏷️ Tags Docker: version + latest"
           else
             echo "🏷️ Tags Docker: version uniquement"
@@ -263,8 +263,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🐳 Commandes Docker" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ghcr.io/track-train/api:${{ needs.versioning-and-release.outputs.full_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
-            echo "docker pull ghcr.io/track-train/api:latest" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull ghcr.io/baptiste-ferrand/template-release:latest" >> $GITHUB_STEP_SUMMARY
           fi
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
