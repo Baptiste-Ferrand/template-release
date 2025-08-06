@@ -230,12 +230,6 @@ jobs:
           echo "- Est latest: ${{ needs.versioning-and-release.outputs.is_latest }}"
           echo "- Branche: ${{ github.ref_name }}"
 
-      - name: Setup Node.js (optionnel pour build)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
       - name: Connexion à GitHub Container Registry
         uses: docker/login-action@v3
         with:
