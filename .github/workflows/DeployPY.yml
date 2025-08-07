@@ -15,9 +15,9 @@ jobs:
       contents: write
       packages: write
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      full_tag: ${{ steps.version.outputs.full_tag }}
-      is_latest: ${{ steps.version.outputs.is_latest }}
+      version: ${{ steps.set_job_outputs.outputs.version }}
+      full_tag: ${{ steps.set_job_outputs.outputs.full_tag }}
+      is_latest: ${{ steps.set_job_outputs.outputs.is_latest }}
       should_process: ${{ steps.check_version.outputs.should_process }}
     steps:
       - name: Checkout repository
@@ -43,34 +43,29 @@ jobs:
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}")
           
-          # Extraire le titre et le corps de la PR en gérant les caractères spéciaux
           PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // ""' | tr -d '\n\r')
           PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
           
-          # Sauvegarder le titre (sans caractères de fin de ligne)
           echo "PR_TITLE<<EOF" >> $GITHUB_ENV
           echo "$PR_TITLE" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
           
-          # Sauvegarder le corps en base64 pour éviter les problèmes de caractères spéciaux
           PR_BODY_B64=$(echo "$PR_BODY" | base64 -w 0)
           echo "PR_BODY_B64=${PR_BODY_B64}" >> $GITHUB_ENV
           
-          # Déterminer le type de version basé sur les tags dans le titre
           VERSION_TYPE=""
           HAS_VERSION_TAG="false"
           
-          if echo "$PR_TITLE" | grep -qi "#breakingchange\|#breaking\|#major"; then
+          if echo "$PR_TITLE" | grep -qi "[@#]breakingchange\|[@#]breaking\|[@#]major"; then
             VERSION_TYPE="major"
             HAS_VERSION_TAG="true"
-          elif echo "$PR_TITLE" | grep -qi "#feat\|#feature\|#minor"; then
+          elif echo "$PR_TITLE" | grep -qi "[@#]feat\|[@#]feature\|[@#]minor"; then
             VERSION_TYPE="minor"
             HAS_VERSION_TAG="true"
-          elif echo "$PR_TITLE" | grep -qi "#fix\|#hotfix\|#patch"; then
+          elif echo "$PR_TITLE" | grep -qi "[@#]fix\|[@#]hotfix\|[@#]patch"; then
             VERSION_TYPE="patch"
             HAS_VERSION_TAG="true"
           else
-            # Aucun tag de version trouvé
             VERSION_TYPE="none"
             HAS_VERSION_TAG="false"
             echo "ℹ️ No version tag found in PR title."
@@ -90,7 +85,6 @@ jobs:
           
           SHOULD_PROCESS="false"
           
-          # Logic: Process if we have a version tag OR if it's develop → main
           if [[ "$HAS_VERSION_TAG" == "true" ]]; then
             echo "✅ Processing: Version tag found in PR title"
             SHOULD_PROCESS="true"
@@ -115,12 +109,10 @@ jobs:
           TARGET_BRANCH="${{ github.base_ref }}"
           HAS_VERSION_TAG="${{ env.HAS_VERSION_TAG }}"
           
-          # Si c'est develop → main SANS tag de version, on garde la version actuelle
           if [[ "$TARGET_BRANCH" == "main" && "$HAS_VERSION_TAG" == "false" ]]; then
             NEW_VERSION="$CURRENT_VERSION"
             echo "🔄 develop → main: Keeping current version ${NEW_VERSION}"
           else
-            # Incrémenter la version selon le tag trouvé
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
             
             case $VERSION_TYPE in
@@ -144,7 +136,6 @@ jobs:
             NEW_VERSION="$MAJOR.$MINOR.$PATCH"
           fi
           
-          # Déterminer les tags selon la branche cible
           if [[ "$TARGET_BRANCH" == "develop" ]]; then
             FULL_TAG="${NEW_VERSION}-pre-prod"
             IS_LATEST="false"
@@ -158,14 +149,10 @@ jobs:
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
           echo "FULL_TAG=$FULL_TAG" >> $GITHUB_ENV
           echo "IS_LATEST=$IS_LATEST" >> $GITHUB_ENV
-          
-          echo "📦 Version for pyproject.toml: ${NEW_VERSION}"
-          echo "🏷️ Tag for Docker/Release: ${FULL_TAG}"
 
       - name: Extract changelog from PR body
         if: env.SHOULD_PROCESS == 'true'
         run: |
-          # Décoder le corps de la PR depuis base64
           PR_BODY=$(echo "${{ env.PR_BODY_B64 }}" | base64 -d)
           
           echo "🔍 PR Body (first 500 chars):"
@@ -173,12 +160,10 @@ jobs:
           echo ""
           echo "..."
           
-          # Traitement du changelog - accepter plusieurs formats
           if echo "$PR_BODY" | grep -q -i -E "[@#](changelog|changes|release.notes?)"; then
             echo "✅ Changelog marker found!"
             CHANGELOG=$(echo "$PR_BODY" | sed -n -E '/[@#](changelog|changes|release.notes?)/I,$p' | sed '1d' | sed '/^[[:space:]]*$/d')
           else
-            # Générer un changelog basé sur le type de version OU develop → main
             if [[ "${{ github.base_ref }}" == "main" && "${{ env.HAS_VERSION_TAG }}" == "false" ]]; then
               CHANGELOG="- 🚀 Production release of version ${{ env.FULL_TAG }}"
             else
@@ -211,35 +196,17 @@ jobs:
           echo "CHANGELOG_B64=${CHANGELOG_B64}" >> $GITHUB_ENV
 
       - name: Update version in pyproject.toml
-        id: version
+        id: update_version
         if: env.SHOULD_PROCESS == 'true' && env.HAS_VERSION_TAG == 'true'
         run: |
-          # On met à jour pyproject.toml SEULEMENT si on a un tag de version
-          # (pas pour develop → main sans tag)
           python -c "import toml; data = toml.load('pyproject.toml'); data['project']['version'] = '${{ env.NEW_VERSION }}'; toml.dump(data, open('pyproject.toml', 'w'))"
           echo "📝 Updated pyproject.toml to version: ${{ env.NEW_VERSION }}"
-          
-          echo "version=${{ env.NEW_VERSION }}" >> $GITHUB_OUTPUT
-          echo "full_tag=${{ env.FULL_TAG }}" >> $GITHUB_OUTPUT
-          echo "is_latest=${{ env.IS_LATEST }}" >> $GITHUB_OUTPUT
-
-      - name: Set outputs for no-increment case
-        id: version_no_increment
-        if: env.SHOULD_PROCESS == 'true' && env.HAS_VERSION_TAG == 'false'
-        run: |
-          # Pour develop → main sans tag, on set les outputs sans modifier le fichier
-          echo "📝 No pyproject.toml update needed (develop → main)"
-          
-          echo "version=${{ env.NEW_VERSION }}" >> $GITHUB_OUTPUT
-          echo "full_tag=${{ env.FULL_TAG }}" >> $GITHUB_OUTPUT
-          echo "is_latest=${{ env.IS_LATEST }}" >> $GITHUB_OUTPUT
 
       - name: Commit and push updated pyproject.toml
         if: env.SHOULD_PROCESS == 'true' && env.HAS_VERSION_TAG == 'true'
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          
           git add pyproject.toml
           git commit -m "Update version to ${{ env.NEW_VERSION }} [skip ci]"
           git push origin ${{ github.ref_name }}
@@ -258,11 +225,9 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          
           git tag ${{ env.FULL_TAG }}
           git push origin ${{ env.FULL_TAG }}
           echo "🏷️ Created tag: ${{ env.FULL_TAG }}"
-          
           if [[ "${{ env.IS_LATEST }}" == "true" ]]; then
             git tag latest
             git push origin latest
@@ -273,8 +238,6 @@ jobs:
         if: env.SHOULD_PROCESS == 'true'
         run: |
           CHANGELOG_DECODED=$(echo "$CHANGELOG_B64" | base64 -d)
-          
-          # Déterminer l'icône selon le type de version ou si c'est un release main
           if [[ "${{ github.base_ref }}" == "main" && "${{ env.HAS_VERSION_TAG }}" == "false" ]]; then
             VERSION_ICON="🚀"
             VERSION_DISPLAY="Production Release"
@@ -286,10 +249,7 @@ jobs:
               *) VERSION_ICON="📦"; VERSION_DISPLAY="Update" ;;
             esac
           fi
-          
-          # Récupérer le titre de la PR proprement
           PR_TITLE="${{ env.PR_TITLE }}"
-          
           RELEASE_PAYLOAD=$(jq -n \
             --arg tag_name "${{ env.FULL_TAG }}" \
             --arg name "${VERSION_ICON} Release ${{ env.FULL_TAG }}" \
@@ -309,20 +269,16 @@ jobs:
               prerelease: $prerelease,
               make_latest: $is_latest_str
             }')
-          
           echo "🚀 Creating release with payload:"
           echo "$RELEASE_PAYLOAD" | jq '.'
-          
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
             "https://api.github.com/repos/${{ github.repository }}/releases" \
             -d "$RELEASE_PAYLOAD")
-          
           echo "🎯 GitHub API Response:"
           echo "$RESPONSE" | jq '.'
-          
           if echo "$RESPONSE" | jq -e '.html_url' > /dev/null; then
             RELEASE_URL=$(echo "$RESPONSE" | jq -r '.html_url')
             echo "✅ Release created successfully: $RELEASE_URL"
@@ -331,6 +287,15 @@ jobs:
             echo "$RESPONSE"
             exit 1
           fi
+
+      - name: Set job outputs
+        id: set_job_outputs
+        if: env.SHOULD_PROCESS == 'true'
+        run: |
+          # Toujours setter les outputs, même si pas d'incrémentation
+          echo "version=${{ env.NEW_VERSION }}" >> $GITHUB_OUTPUT
+          echo "full_tag=${{ env.FULL_TAG }}" >> $GITHUB_OUTPUT
+          echo "is_latest=${{ env.IS_LATEST }}" >> $GITHUB_OUTPUT
 
   build-and-deploy-image:
     needs: versioning-and-release
@@ -359,11 +324,9 @@ jobs:
         id: prepare_tags
         run: |
           TAGS="ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}"
-          
           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
             TAGS="${TAGS},ghcr.io/baptiste-ferrand/template-release:latest"
           fi
-          
           echo "DOCKER_TAGS=${TAGS}" >> $GITHUB_ENV
           echo "🐳 Docker tags: ${TAGS}"
 
