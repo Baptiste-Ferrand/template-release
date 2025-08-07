@@ -1,270 +1,404 @@
-# name: Version, Tag, Release & Package (toml)
+name: Version, Tag, Release & Package
 
-# on:
-#   pull_request:
-#     types: [closed]
-#     branches:
-#       - main
-#       - develop
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+      - develop
 
-# jobs:
-#   versioning-and-release:
-#     if: github.event.pull_request.merged == true
-#     runs-on: ubuntu-latest
-#     permissions:
-#       contents: write
-#       packages: write
-#     outputs:
-#       version: ${{ steps.version.outputs.version }}
-#       full_tag: ${{ steps.version.outputs.full_tag }}
-#       is_latest: ${{ steps.version.outputs.is_latest }}
-#     steps:
-#       - name: Checkout du dépôt
-#         uses: actions/checkout@v4
-#         with:
-#           fetch-depth: 0
-#           token: ${{ secrets.GITHUB_TOKEN }}
+jobs:
+  versioning-and-release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      full_tag: ${{ steps.version.outputs.full_tag }}
+      is_latest: ${{ steps.version.outputs.is_latest }}
+      should_process: ${{ steps.check_version.outputs.should_process }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-#       - name: Install toml
-#         run: |
-#           python -m pip install toml
+      - name: Install toml
+        run: |
+          python -m pip install toml
 
-#       - name: Récupérer la version actuelle depuis pyproject.toml
-#         id: get_version
-#         run: |
-#           VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
-#           echo "CURRENT_VERSION=${VERSION}" >> $GITHUB_ENV
-#           echo "Version actuelle: $VERSION"
+      - name: Get current version from pyproject.toml
+        id: get_version
+        run: |
+          VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
+          echo "CURRENT_VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "📦 Current version in pyproject.toml: ${VERSION}"
 
-#       - name: Incrémenter la version en fonction de la branche source de la PR
-#         id: increment_version
-#         run: |
-#           CURRENT_VERSION=${{ env.CURRENT_VERSION }}
-#           BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
-#           TARGET_BRANCH="${{ github.base_ref }}"
+      - name: Get PR details and determine version type
+        run: |
+          PR_DATA=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}")
           
-#           echo "Branche source: $BRANCH_NAME"
-#           echo "Branche cible: $TARGET_BRANCH"
+          # Extraire le titre et le corps de la PR en gérant les caractères spéciaux
+          PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // ""' | tr -d '\n\r')
+          PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
           
-#           # Nettoyer la version existante (enlever les suffixes -pre-prod)
-#           CLEAN_VERSION=$(echo $CURRENT_VERSION | sed 's/-pre-prod//')
-#           echo "Version nettoyée: $CLEAN_VERSION"
+          # Sauvegarder le titre (sans caractères de fin de ligne)
+          echo "PR_TITLE<<EOF" >> $GITHUB_ENV
+          echo "$PR_TITLE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
           
-#           # Incrémenter la version selon le type de branche source
-#           case $BRANCH_NAME in
-#             feat/*|feature/*)
-#               NEW_VERSION=$(echo $CLEAN_VERSION | awk -F. -v OFS=. '{$2++; $3=0; print $0}')
-#               echo "🚀 Incrémentation mineure (feature)"
-#               ;;
-#             fix/*|hotfix/*)
-#               NEW_VERSION=$(echo $CLEAN_VERSION | awk -F. -v OFS=. '{$3++; print $0}')
-#               echo "🐛 Incrémentation patch (fix)"
-#               ;;
-#             *breaking*|*major*)
-#               NEW_VERSION=$(echo $CLEAN_VERSION | awk -F. -v OFS=. '{$1++; $2=0; $3=0; print $0}')
-#               echo "💥 Incrémentation majeure (breaking change)"
-#               ;;
-#             *)
-#               NEW_VERSION=$CLEAN_VERSION
-#               echo "ℹ️ Pas d'incrémentation automatique"
-#               ;;
-#           esac
+          # Sauvegarder le corps en base64 pour éviter les problèmes de caractères spéciaux
+          PR_BODY_B64=$(echo "$PR_BODY" | base64 -w 0)
+          echo "PR_BODY_B64=${PR_BODY_B64}" >> $GITHUB_ENV
           
-#           # Ajouter le suffixe selon la branche cible
-#           if [[ "$TARGET_BRANCH" == "develop" ]]; then
-#             FULL_VERSION="${NEW_VERSION}-pre-prod"
-#             IS_LATEST="false"
-#             echo "🧪 Version pre-prod: $FULL_VERSION"
-#           elif [[ "$TARGET_BRANCH" == "main" ]]; then
-#             FULL_VERSION="${NEW_VERSION}"
-#             IS_LATEST="true"
-#             echo "✅ Version stable: $FULL_VERSION"
-#           fi
+          # Déterminer le type de version basé sur les tags dans le titre
+          VERSION_TYPE=""
+          HAS_VERSION_TAG="false"
           
-#           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
-#           echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-#           echo "IS_LATEST=$IS_LATEST" >> $GITHUB_ENV
+          if echo "$PR_TITLE" | grep -qi "#breakingchange\|#breaking\|#major"; then
+            VERSION_TYPE="major"
+            HAS_VERSION_TAG="true"
+          elif echo "$PR_TITLE" | grep -qi "#feat\|#feature\|#minor"; then
+            VERSION_TYPE="minor"
+            HAS_VERSION_TAG="true"
+          elif echo "$PR_TITLE" | grep -qi "#fix\|#hotfix\|#patch"; then
+            VERSION_TYPE="patch"
+            HAS_VERSION_TAG="true"
+          else
+            # Aucun tag de version trouvé
+            VERSION_TYPE="none"
+            HAS_VERSION_TAG="false"
+            echo "ℹ️ No version tag found in PR title."
+          fi
+          
+          echo "VERSION_TYPE=${VERSION_TYPE}" >> $GITHUB_ENV
+          echo "HAS_VERSION_TAG=${HAS_VERSION_TAG}" >> $GITHUB_ENV
+          echo "🏷️ Detected version type: ${VERSION_TYPE}"
+          echo "📝 PR Title: ${PR_TITLE}"
+          echo "✅ Has version tag: ${HAS_VERSION_TAG}"
 
-#       - name: Extraire le changelog depuis la description de la PR
-#         id: extract_changelog
-#         run: |
-#           PR_BODY='${{ github.event.pull_request.body }}'
+      - name: Check if we should process version/release
+        id: check_version
+        run: |
+          TARGET_BRANCH="${{ github.base_ref }}"
+          HAS_VERSION_TAG="${{ env.HAS_VERSION_TAG }}"
           
-#           # Extraire le contenu après #changelog
-#           if echo "$PR_BODY" | grep -q "#changelog"; then
-#             CHANGELOG=$(echo "$PR_BODY" | sed -n '/#changelog/,$p' | sed '1d' | sed '/^[[:space:]]*$/d')
-#           else
-#             CHANGELOG="- Mise à jour vers la version ${{ env.FULL_VERSION }}"
-#           fi
+          SHOULD_PROCESS="false"
           
-#           if [ -z "$CHANGELOG" ]; then
-#             CHANGELOG="- Mise à jour vers la version ${{ env.FULL_VERSION }}"
-#           fi
+          # Logic: Process if we have a version tag OR if it's develop → main
+          if [[ "$HAS_VERSION_TAG" == "true" ]]; then
+            echo "✅ Processing: Version tag found in PR title"
+            SHOULD_PROCESS="true"
+          elif [[ "$TARGET_BRANCH" == "main" ]]; then
+            echo "✅ Processing: develop → main release (no version increment)"
+            SHOULD_PROCESS="true"
+          else
+            echo "⏭️ Skipping: No version tag and not a main release"
+            SHOULD_PROCESS="false"
+          fi
           
-#           echo "📝 Changelog extrait:"
-#           echo "$CHANGELOG"
-          
-#           # Sauvegarder le changelog dans les variables d'environnement
-#           {
-#             echo 'CHANGELOG<<EOF'
-#             echo "$CHANGELOG"
-#             echo 'EOF'
-#           } >> $GITHUB_ENV
+          echo "SHOULD_PROCESS=${SHOULD_PROCESS}" >> $GITHUB_ENV
+          echo "should_process=${SHOULD_PROCESS}" >> $GITHUB_OUTPUT
+          echo "🎯 Should process: ${SHOULD_PROCESS}"
 
-#       - name: Mettre à jour la version dans pyproject.toml
-#         id: version
-#         run: |
-#           python -c "import toml; data = toml.load('pyproject.toml'); data['project']['version'] = '${{ env.FULL_VERSION }}'; toml.dump(data, open('pyproject.toml', 'w'))"
-#           echo "✅ pyproject.toml mis à jour avec la version: ${{ env.FULL_VERSION }}"
-#           echo "version=${{ env.NEW_VERSION }}" >> $GITHUB_OUTPUT
-#           echo "full_tag=${{ env.FULL_VERSION }}" >> $GITHUB_OUTPUT
-#           echo "is_latest=${{ env.IS_LATEST }}" >> $GITHUB_OUTPUT
-
-#       - name: Commit and push the updated pyproject.toml
-#         run: |
-#           git config --global user.name "GitHub Actions"
-#           git config --global user.email "actions@github.com"
+      - name: Increment version based on PR title tags
+        id: increment_version
+        if: env.SHOULD_PROCESS == 'true'
+        run: |
+          CURRENT_VERSION=${{ env.CURRENT_VERSION }}
+          VERSION_TYPE=${{ env.VERSION_TYPE }}
+          TARGET_BRANCH="${{ github.base_ref }}"
+          HAS_VERSION_TAG="${{ env.HAS_VERSION_TAG }}"
           
-#           git add pyproject.toml
-#           git commit -m "🔖 Update version to ${{ env.FULL_VERSION }}"
-#           git push origin ${{ github.ref_name }}
-
-#       - name: Supprimer l'ancien tag 'latest' si nécessaire
-#         if: env.IS_LATEST == 'true'
-#         run: |
-#           echo "🗑️ Suppression de l'ancien tag 'latest'..."
-#           # Supprimer le tag latest local et distant s'il existe
-#           if git tag -l | grep -q "^latest$"; then
-#             git tag -d latest || true
-#             git push origin :refs/tags/latest || true
-#             echo "✅ Ancien tag 'latest' supprimé"
-#           else
-#             echo "ℹ️ Aucun tag 'latest' existant à supprimer"
-#           fi
-
-#       - name: Créer les tags Git
-#         run: |
-#           git config --global user.name "GitHub Actions"
-#           git config --global user.email "actions@github.com"
-          
-#           echo "🏷️ Création du tag principal: ${{ env.FULL_VERSION }}"
-#           git tag ${{ env.FULL_VERSION }}
-#           git push origin ${{ env.FULL_VERSION }}
-          
-#           # Créer le tag latest si c'est une release principale
-#           if [[ "${{ env.IS_LATEST }}" == "true" ]]; then
-#             echo "🏷️ Création du tag 'latest'"
-#             git tag latest
-#             git push origin latest
-#           fi
-
-#       - name: Créer la GitHub Release
-#         uses: softprops/action-gh-release@v2
-#         with:
-#           tag_name: ${{ env.FULL_VERSION }}
-#           name: "Release ${{ env.FULL_VERSION }}"
-#           body: |
-#             ## 📋 Changelog
+          # Si c'est develop → main SANS tag de version, on garde la version actuelle
+          if [[ "$TARGET_BRANCH" == "main" && "$HAS_VERSION_TAG" == "false" ]]; then
+            NEW_VERSION="$CURRENT_VERSION"
+            echo "🔄 develop → main: Keeping current version ${NEW_VERSION}"
+          else
+            # Incrémenter la version selon le tag trouvé
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
             
-#             ${{ env.CHANGELOG }}
+            case $VERSION_TYPE in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                echo "🔥 Major version increment: ${MAJOR}.${MINOR}.${PATCH}"
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                echo "✨ Minor version increment: ${MAJOR}.${MINOR}.${PATCH}"
+                ;;
+              patch)
+                PATCH=$((PATCH + 1))
+                echo "🔧 Patch version increment: ${MAJOR}.${MINOR}.${PATCH}"
+                ;;
+            esac
             
-#             ## 🏷️ Tags
-#             - **Version**: `${{ env.FULL_VERSION }}`${{ env.IS_LATEST == 'true' && format('{0}- **Latest**: `latest`', '
-#             ') || '' }}
-            
-#             ## 📦 Docker Package
-            
-#             ```bash
-#             # Pull par version spécifique
-#             docker pull ghcr.io/baptiste-ferrand/template-release:${{ env.FULL_VERSION }}
-#             ${{ env.IS_LATEST == 'true' && format('{0}# Pull latest stable{0}docker pull ghcr.io/baptiste-ferrand/template-release:latest', '
-#             ') || '' }}
-#             ```
-            
-#             ## ℹ️ Informations
-            
-#             - **Branche source**: `${{ github.event.pull_request.head.ref }}`
-#             - **Branche cible**: `${{ github.base_ref }}`
-#             - **Type de release**: ${{ env.IS_LATEST == 'true' && '**Stable** 🎯' || '**Pre-production** 🧪' }}
-#             - **Auteur de la PR**: @${{ github.event.pull_request.user.login }}
-#           prerelease: ${{ env.IS_LATEST != 'true' }}
-#           make_latest: ${{ env.IS_LATEST == 'true' }}
-#         env:
-#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-#   build-and-deploy-image:
-#     needs: versioning-and-release
-#     runs-on: ubuntu-latest
-#     permissions:
-#       contents: read
-#       packages: write
-#     steps:
-#       - name: Checkout du dépôt
-#         uses: actions/checkout@v4
-#         with:
-#           ref: ${{ github.ref_name }}
-
-#       - name: Vérifier les informations de build
-#         run: |
-#           echo "🔍 Informations de build:"
-#           echo "- Version: ${{ needs.versioning-and-release.outputs.full_tag }}"
-#           echo "- Est latest: ${{ needs.versioning-and-release.outputs.is_latest }}"
-#           echo "- Branche: ${{ github.ref_name }}"
-
-#       - name: Connexion à GitHub Container Registry
-#         uses: docker/login-action@v3
-#         with:
-#           registry: ghcr.io
-#           username: ${{ github.actor }}
-#           password: ${{ secrets.GITHUB_TOKEN }}
-
-#       - name: Activer Buildx
-#         uses: docker/setup-buildx-action@v3
-
-#       - name: Préparer les tags Docker
-#         id: prepare_tags
-#         run: |
-#           TAGS="ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}"
+            NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          fi
           
-#           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
-#             TAGS="${TAGS},ghcr.io/baptiste-ferrand/template-release:latest"
-#             echo "🏷️ Tags Docker: version + latest"
-#           else
-#             echo "🏷️ Tags Docker: version uniquement"
-#           fi
+          # Déterminer les tags selon la branche cible
+          if [[ "$TARGET_BRANCH" == "develop" ]]; then
+            FULL_TAG="${NEW_VERSION}-pre-prod"
+            IS_LATEST="false"
+            echo "🧪 Pre-production release: ${FULL_TAG}"
+          elif [[ "$TARGET_BRANCH" == "main" ]]; then
+            FULL_TAG="${NEW_VERSION}"
+            IS_LATEST="true"
+            echo "🎯 Stable release: ${FULL_TAG}"
+          fi
           
-#           echo "DOCKER_TAGS=${TAGS}" >> $GITHUB_ENV
-#           echo "Tags préparés: ${TAGS}"
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          echo "FULL_TAG=$FULL_TAG" >> $GITHUB_ENV
+          echo "IS_LATEST=$IS_LATEST" >> $GITHUB_ENV
+          
+          echo "📦 Version for pyproject.toml: ${NEW_VERSION}"
+          echo "🏷️ Tag for Docker/Release: ${FULL_TAG}"
 
-#       - name: Construire et pousser l'image Docker
-#         uses: docker/build-push-action@v5
-#         with:
-#           context: .
-#           push: true
-#           platforms: linux/amd64,linux/arm64/v8
-#           tags: ${{ env.DOCKER_TAGS }}
-#           labels: |
-#             org.opencontainers.image.title=Track&Train API
-#             org.opencontainers.image.description=API for Track&Train application
-#             org.opencontainers.image.version=${{ needs.versioning-and-release.outputs.full_tag }}
-#             org.opencontainers.image.revision=${{ github.sha }}
-#             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
-#             org.opencontainers.image.source=${{ github.event.repository.clone_url }}
+      - name: Extract changelog from PR body
+        if: env.SHOULD_PROCESS == 'true'
+        run: |
+          # Décoder le corps de la PR depuis base64
+          PR_BODY=$(echo "${{ env.PR_BODY_B64 }}" | base64 -d)
+          
+          echo "🔍 PR Body (first 500 chars):"
+          echo "$PR_BODY" | head -c 500
+          echo ""
+          echo "..."
+          
+          # Traitement du changelog - accepter plusieurs formats
+          if echo "$PR_BODY" | grep -q -i -E "[@#](changelog|changes|release.notes?)"; then
+            echo "✅ Changelog marker found!"
+            CHANGELOG=$(echo "$PR_BODY" | sed -n -E '/[@#](changelog|changes|release.notes?)/I,$p' | sed '1d' | sed '/^[[:space:]]*$/d')
+          else
+            # Générer un changelog basé sur le type de version OU develop → main
+            if [[ "${{ github.base_ref }}" == "main" && "${{ env.HAS_VERSION_TAG }}" == "false" ]]; then
+              CHANGELOG="- 🚀 Production release of version ${{ env.FULL_TAG }}"
+            else
+              case ${{ env.VERSION_TYPE }} in
+                major)
+                  CHANGELOG="- 🔥 Breaking changes in version ${{ env.FULL_TAG }}"
+                  ;;
+                minor)
+                  CHANGELOG="- ✨ New features in version ${{ env.FULL_TAG }}"
+                  ;;
+                patch)
+                  CHANGELOG="- 🔧 Bug fixes in version ${{ env.FULL_TAG }}"
+                  ;;
+                *)
+                  CHANGELOG="- Update to version ${{ env.FULL_TAG }}"
+                  ;;
+              esac
+            fi
+          fi
+          
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="- Update to version ${{ env.FULL_TAG }}"
+          fi
+          
+          echo "📋 Final changelog:"
+          echo "$CHANGELOG"
+          echo ""
+          
+          CHANGELOG_B64=$(echo "$CHANGELOG" | base64 -w 0)
+          echo "CHANGELOG_B64=${CHANGELOG_B64}" >> $GITHUB_ENV
 
-#       - name: Résumé du déploiement
-#         run: |
-#           echo "## 🎉 Déploiement réussi!" >> $GITHUB_STEP_SUMMARY
-#           echo "" >> $GITHUB_STEP_SUMMARY
-#           echo "### 📦 Package créé" >> $GITHUB_STEP_SUMMARY
-#           echo "- **Version**: \`${{ needs.versioning-and-release.outputs.full_tag }}\`" >> $GITHUB_STEP_SUMMARY
-#           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
-#             echo "- **Latest**: \`latest\`" >> $GITHUB_STEP_SUMMARY
-#           fi
-#           echo "" >> $GITHUB_STEP_SUMMARY
-#           echo "### 🐳 Commandes Docker" >> $GITHUB_STEP_SUMMARY
-#           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-#           echo "docker pull ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}" >> $GITHUB_STEP_SUMMARY
-#           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
-#             echo "docker pull ghcr.io/baptiste-ferrand/template-release:latest" >> $GITHUB_STEP_SUMMARY
-#           fi
-#           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+      - name: Update version in pyproject.toml
+        id: version
+        if: env.SHOULD_PROCESS == 'true' && env.HAS_VERSION_TAG == 'true'
+        run: |
+          # On met à jour pyproject.toml SEULEMENT si on a un tag de version
+          # (pas pour develop → main sans tag)
+          python -c "import toml; data = toml.load('pyproject.toml'); data['project']['version'] = '${{ env.NEW_VERSION }}'; toml.dump(data, open('pyproject.toml', 'w'))"
+          echo "📝 Updated pyproject.toml to version: ${{ env.NEW_VERSION }}"
+          
+          echo "version=${{ env.NEW_VERSION }}" >> $GITHUB_OUTPUT
+          echo "full_tag=${{ env.FULL_TAG }}" >> $GITHUB_OUTPUT
+          echo "is_latest=${{ env.IS_LATEST }}" >> $GITHUB_OUTPUT
+
+      - name: Set outputs for no-increment case
+        id: version_no_increment
+        if: env.SHOULD_PROCESS == 'true' && env.HAS_VERSION_TAG == 'false'
+        run: |
+          # Pour develop → main sans tag, on set les outputs sans modifier le fichier
+          echo "📝 No pyproject.toml update needed (develop → main)"
+          
+          echo "version=${{ env.NEW_VERSION }}" >> $GITHUB_OUTPUT
+          echo "full_tag=${{ env.FULL_TAG }}" >> $GITHUB_OUTPUT
+          echo "is_latest=${{ env.IS_LATEST }}" >> $GITHUB_OUTPUT
+
+      - name: Commit and push updated pyproject.toml
+        if: env.SHOULD_PROCESS == 'true' && env.HAS_VERSION_TAG == 'true'
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          git add pyproject.toml
+          git commit -m "Update version to ${{ env.NEW_VERSION }} [skip ci]"
+          git push origin ${{ github.ref_name }}
+
+      - name: Remove old latest tag
+        if: env.SHOULD_PROCESS == 'true' && env.IS_LATEST == 'true'
+        run: |
+          if git tag -l | grep -q "^latest$"; then
+            git tag -d latest || true
+            git push origin :refs/tags/latest || true
+            echo "🗑️ Removed old latest tag"
+          fi
+
+      - name: Create Git tags
+        if: env.SHOULD_PROCESS == 'true'
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          git tag ${{ env.FULL_TAG }}
+          git push origin ${{ env.FULL_TAG }}
+          echo "🏷️ Created tag: ${{ env.FULL_TAG }}"
+          
+          if [[ "${{ env.IS_LATEST }}" == "true" ]]; then
+            git tag latest
+            git push origin latest
+            echo "🏷️ Created latest tag"
+          fi
+
+      - name: Create GitHub Release
+        if: env.SHOULD_PROCESS == 'true'
+        run: |
+          CHANGELOG_DECODED=$(echo "$CHANGELOG_B64" | base64 -d)
+          
+          # Déterminer l'icône selon le type de version ou si c'est un release main
+          if [[ "${{ github.base_ref }}" == "main" && "${{ env.HAS_VERSION_TAG }}" == "false" ]]; then
+            VERSION_ICON="🚀"
+            VERSION_DISPLAY="Production Release"
+          else
+            case ${{ env.VERSION_TYPE }} in
+              major) VERSION_ICON="🔥"; VERSION_DISPLAY="Breaking Changes" ;;
+              minor) VERSION_ICON="✨"; VERSION_DISPLAY="New Features" ;;
+              patch) VERSION_ICON="🔧"; VERSION_DISPLAY="Bug Fixes" ;;
+              *) VERSION_ICON="📦"; VERSION_DISPLAY="Update" ;;
+            esac
+          fi
+          
+          # Récupérer le titre de la PR proprement
+          PR_TITLE="${{ env.PR_TITLE }}"
+          
+          RELEASE_PAYLOAD=$(jq -n \
+            --arg tag_name "${{ env.FULL_TAG }}" \
+            --arg name "${VERSION_ICON} Release ${{ env.FULL_TAG }}" \
+            --arg changelog "$CHANGELOG_DECODED" \
+            --arg full_tag "${{ env.FULL_TAG }}" \
+            --arg source_branch "${{ github.event.pull_request.head.ref }}" \
+            --arg target_branch "${{ github.base_ref }}" \
+            --arg pr_author "${{ github.event.pull_request.user.login }}" \
+            --arg version_display "$VERSION_DISPLAY" \
+            --arg pr_title "$PR_TITLE" \
+            --arg is_latest_str "$([[ "${{ env.IS_LATEST }}" == "true" ]] && echo "true" || echo "false")" \
+            --argjson prerelease "$([[ "${{ env.IS_LATEST }}" != "true" ]] && echo true || echo false)" \
+            '{
+              tag_name: $tag_name,
+              name: $name,
+              body: ("## 📋 Changelog\n\n" + $changelog + "\n\n## 🏷️ Tags\n- **Version**: `" + $full_tag + "`" + (if ($is_latest_str == "true") then "\n- **Latest**: `latest`" else "" end) + "\n\n## 📦 Docker Package\n\n```bash\n# Pull specific version\ndocker pull ghcr.io/baptiste-ferrand/template-release:" + $full_tag + (if ($is_latest_str == "true") then "\n# Pull latest stable\ndocker pull ghcr.io/baptiste-ferrand/template-release:latest" else "" end) + "\n```\n\n## ℹ️ Information\n\n- **PR Title**: `" + $pr_title + "`\n- **Version Type**: " + $version_display + "\n- **Source branch**: `" + $source_branch + "`\n- **Target branch**: `" + $target_branch + "`\n- **Release type**: " + (if ($is_latest_str == "true") then "**Stable** 🎯" else "**Pre-production** 🧪" end) + "\n- **PR author**: @" + $pr_author),
+              prerelease: $prerelease,
+              make_latest: $is_latest_str
+            }')
+          
+          echo "🚀 Creating release with payload:"
+          echo "$RELEASE_PAYLOAD" | jq '.'
+          
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases" \
+            -d "$RELEASE_PAYLOAD")
+          
+          echo "🎯 GitHub API Response:"
+          echo "$RESPONSE" | jq '.'
+          
+          if echo "$RESPONSE" | jq -e '.html_url' > /dev/null; then
+            RELEASE_URL=$(echo "$RESPONSE" | jq -r '.html_url')
+            echo "✅ Release created successfully: $RELEASE_URL"
+          else
+            echo "❌ Failed to create release"
+            echo "$RESPONSE"
+            exit 1
+          fi
+
+  build-and-deploy-image:
+    needs: versioning-and-release
+    if: needs.versioning-and-release.outputs.should_process == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare Docker tags
+        id: prepare_tags
+        run: |
+          TAGS="ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}"
+          
+          if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
+            TAGS="${TAGS},ghcr.io/baptiste-ferrand/template-release:latest"
+          fi
+          
+          echo "DOCKER_TAGS=${TAGS}" >> $GITHUB_ENV
+          echo "🐳 Docker tags: ${TAGS}"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64/v8
+          tags: ${{ env.DOCKER_TAGS }}
+          labels: |
+            org.opencontainers.image.title=Track&Train API
+            org.opencontainers.image.description=API for Track&Train application
+            org.opencontainers.image.version=${{ needs.versioning-and-release.outputs.full_tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.source=${{ github.event.repository.clone_url }}
+
+      - name: Deployment summary
+        run: |
+          echo "## 🎉 Deployment successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Package created" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ needs.versioning-and-release.outputs.full_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
+            echo "- **Latest**: \`latest\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🐳 Docker commands" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
+            echo "docker pull ghcr.io/baptiste-ferrand/template-release:latest" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 pyproject.toml" >> $GITHUB_STEP_SUMMARY
+          echo "- Version in pyproject.toml: \`${{ needs.versioning-and-release.outputs.version }}\` (clean version)" >> $GITHUB_STEP_SUMMARY
