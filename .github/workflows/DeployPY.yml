@@ -265,7 +265,7 @@ jobs:
             '{
               tag_name: $tag_name,
               name: $name,
-              body: ("## 📋 Changelog\n\n" + $changelog + "\n\n## 🏷️ Tags\n- **Version**: `" + $full_tag + "`" + (if ($is_latest_str == "true") then "\n- **Latest**: `latest`" else "" end) + "\n\n## 📦 Docker Package\n\n```bash\n# Pull specific version\ndocker pull ghcr.io/baptiste-ferrand/template-release:" + $full_tag + (if ($is_latest_str == "true") then "\n# Pull latest stable\ndocker pull ghcr.io/baptiste-ferrand/template-release:latest" else "" end) + "\n```\n\n## ℹ️ Information\n\n- **PR Title**: `" + $pr_title + "`\n- **Version Type**: " + $version_display + "\n- **Source branch**: `" + $source_branch + "`\n- **Target branch**: `" + $target_branch + "`\n- **Release type**: " + (if ($is_latest_str == "true") then "**Stable** 🎯" else "**Pre-production** 🧪" end) + "\n- **PR author**: @" + $pr_author),
+              body: ("## 📋 Changelog\n\n" + $changelog + "\n\n## 🏷️ Tags\n- **Version**: `" + $full_tag + "`" + (if ($is_latest_str == "true") then "\n- **Latest**: `latest`" else "" end) + "\n\n## 📦 Docker Package\n\n```bash\n# Pull specific version\ndocker pull ghcr.io/baptiste-ferrand/template-release:" + $full_tag + (if ($is_latest_str == "true") then "\n# Pull latest stable\ndocker pull ghcr.io/baptiste-ferrand/template-release:latest" else "\n# Pull latest pre-release\ndocker pull ghcr.io/baptiste-ferrand/template-release:pre-release" end) + "\n```\n\n## ℹ️ Information\n\n- **PR Title**: `" + $pr_title + "`\n- **Version Type**: " + $version_display + "\n- **Source branch**: `" + $source_branch + "`\n- **Target branch**: `" + $target_branch + "`\n- **Release type**: " + (if ($is_latest_str == "true") then "**Stable** 🎯" else "**Pre-production** 🧪" end) + "\n- **PR author**: @" + $pr_author),
               prerelease: $prerelease,
               make_latest: $is_latest_str
             }')
@@ -323,10 +323,28 @@ jobs:
       - name: Prepare Docker tags
         id: prepare_tags
         run: |
-          TAGS="ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}"
-          if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
-            TAGS="${TAGS},ghcr.io/baptiste-ferrand/template-release:latest"
+          TAG="${{ needs.versioning-and-release.outputs.full_tag }}"
+          if [[ -z "$TAG" ]]; then
+            VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
+            if [[ "${{ github.base_ref }}" == "develop" ]]; then
+              TAG="${VERSION}-pre-prod"
+            else
+              TAG="$VERSION"
+            fi
+            echo "🛑 WARNING: Fallback to pyproject.toml version: $TAG"
           fi
+          
+          # Tags Docker avec tag flottant
+          TAGS="ghcr.io/baptiste-ferrand/template-release:${TAG}"
+          
+          if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
+            # Production: latest (pour Watchtower)
+            TAGS="${TAGS},ghcr.io/baptiste-ferrand/template-release:latest"
+          else
+            # Pre-production: pre-release (pour Watchtower)
+            TAGS="${TAGS},ghcr.io/baptiste-ferrand/template-release:pre-release"
+          fi
+          
           echo "DOCKER_TAGS=${TAGS}" >> $GITHUB_ENV
           echo "🐳 Docker tags: ${TAGS}"
 
@@ -353,6 +371,8 @@ jobs:
           echo "- **Version**: \`${{ needs.versioning-and-release.outputs.full_tag }}\`" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
             echo "- **Latest**: \`latest\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Pre-release**: \`pre-release\`" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🐳 Docker commands" >> $GITHUB_STEP_SUMMARY
@@ -360,6 +380,8 @@ jobs:
           echo "docker pull ghcr.io/baptiste-ferrand/template-release:${{ needs.versioning-and-release.outputs.full_tag }}" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.versioning-and-release.outputs.is_latest }}" == "true" ]]; then
             echo "docker pull ghcr.io/baptiste-ferrand/template-release:latest" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "docker pull ghcr.io/baptiste-ferrand/template-release:pre-release" >> $GITHUB_STEP_SUMMARY
           fi
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
